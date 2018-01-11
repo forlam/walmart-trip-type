@@ -1,1 +1,1 @@
-# walmart-trip-type
+# Walmart Trip Type Classification (Kaggle)
