@@ -184,59 +184,108 @@ data2 = data2.drop('FinelineNumber', axis = 1)
 from sklearn.decomposition import PCA
 pca = PCA(n_components = 100)
 pca_fln = pca.fit_transform(x)
-pca_fln = pd.DataFrame(pca_fln)
+pca_fln = pd.DataFrame(pca_fln, columns=["fln"+str(x) for x in range(100)])
 data2 = pd.concat([data2,pca_fln], axis = 1)
 
+######################################################
 
+dept_corr = data.groupby(['VisitNumber','DepartmentDescription']).size().reset_index()
+dept_corr = pd.merge(left=dept_corr,right=dept_corr,how='left',on='VisitNumber')
+dept_corr = dept_corr.groupby(['DepartmentDescription_x','DepartmentDescription_y']).size().reset_index()
+dept_corr = dept_corr.pivot_table(index='DepartmentDescription_x', columns='DepartmentDescription_y', values=0)
+dept_corr = dept_corr.fillna(0)
+for i in range(len(set(data.DepartmentDescription))):
+    dept_corr.iloc[i,i] = 0
+dept_corr = dept_corr.div(dept_corr.max(axis = 1), axis = 0)
+dept_corr = dept_corr.values
+
+dept_freq = data.groupby(['VisitNumber','DepartmentDescription']).size().reset_index()
+dept_freq = dept_freq.pivot_table(index='VisitNumber', columns='DepartmentDescription', values=0)
+dept_freq = dept_freq.fillna(0)
+dept_freq_ind = dept_freq.index
+dept_freq = dept_freq.values
+
+dept_diff = dept_freq
+for i in range(len(set(data.DepartmentDescription))):
+    a = 0.2*dept_freq[:,i]
+    a = np.reshape(a,(a.shape[0],1))
+    b = dept_corr[i,:]
+    c = b*a
+    dept_diff = dept_diff + c
+
+dept_diff = pd.DataFrame(dept_diff, columns = ["dept"+str(x) for x in range(len(set(data.DepartmentDescription)))])
+dept_diff['VisitNumber'] = dept_freq_ind
+
+data2 = pd.merge(left=data2,right=dept_diff,how='left',left_on='VisitNumber',right_on='VisitNumber')
+data2.iloc[:,-68:] = sc_X.fit_transform(data2.iloc[:,-68:])
+
+'''
+import networkx as nx    
+G = nx.from_numpy_matrix(dept_corr.values)
+G = nx.relabel_nodes(G, dict(enumerate(dept_corr.columns)))
+nx.draw(G, pos=nx.spring_layout(G), with_labels=True, node_size = 4, width = 0.2, font_size = 3)
+plt.savefig("labels.png", format="PNG",dpi=1000)
+'''
+
+####################################################
 
 from sklearn.cross_validation import train_test_split
 X_train, X_test, y_train, y_test = train_test_split(data2.iloc[:,2:] ,data2.iloc[:,0],test_size = 0.2)
 
 # Applying Random Forest Classifier
-'''from sklearn.ensemble import RandomForestClassifier
+'''
+from sklearn.ensemble import RandomForestClassifier
 classifier = RandomForestClassifier(n_estimators = 250, criterion = 'entropy')
 classifier.fit(X_train, y_train)
 y_pred = classifier.predict(X_test)
 sum(y_pred == y_test)/18041
-'''
+
+
 from sklearn.linear_model import LogisticRegression
 classifier = LogisticRegression()
 classifier.fit(X_train, y_train)
 y_pred = classifier.predict(X_test)
 sum(y_pred == y_test)/18041
 
+from xgboost import XGBClassifier
+classifier = XGBClassifier()
+classifier.fit(X_train, y_train)
+y_pred = classifier.predict(X_test)
+sum(y_pred == y_test)/18041
+'''
 
 
 
 
-import networkx as nx
-
-G = np.zeros(shape = (3,3))
-G[1,0] = 1
-G[2,0] = 1
-G[0,1] = 1
-G[0,2] = 1
 
 
-T_conv.get_edge_data(1,2)
-plt.show()
-
-a = data.groupby(['VisitNumber','DepartmentDescription']).size().reset_index()
-b = pd.merge(left=a,right=a,how='left',on='VisitNumber')
-c = b.groupby(['DepartmentDescription_x','DepartmentDescription_y']).size().reset_index()
-c[0] = 1
-d = c.pivot_table(index='DepartmentDescription_x', columns='DepartmentDescription_y', values=0)
-d = d.fillna(0)
-d = d.values
-T_conv = nx.from_pandas_dataframe(c, 'DepartmentDescription_x', 'DepartmentDescription_y', 0)
-nx.draw(T_conv, with_labels=False, node_size = 2, width = 0.2)
-plt.savefig("labels.png", format="PNG",dpi=1000)
-[n for n, d in T_conv.nodes(data=True)]
-[(u, v, d) for u, v, d in T_conv.edges(data=True)]
-T_conv.has_edge('GROCERY DRY GOODS', 'PLAYERS AND ELECTRONICS')
 
 
-test = data.groupby(['VisitNumber','DepartmentDescription']).size().reset_index()
-test2 = test.pivot_table(index='VisitNumber', columns='DepartmentDescription', values=0)
-test2 = test2.fillna(0)
 
+import xgboost as xgb
+
+label_dict = pd.DataFrame(list(set(data.TripType)))
+label_dict['ind'] = pd.Series(list(label_dict.index))
+label_dict = label_dict.set_index(0).to_dict()['ind']
+y_train = y_train.map(label_dict)
+y_test = y_test.map(label_dict)
+
+xg_train = xgb.DMatrix(X_train.values, label=y_train.values)
+xg_test = xgb.DMatrix(X_test.values, label=y_test.values)
+# setup parameters for xgboost
+param = {}
+# use softmax multi-class classification
+param['objective'] = 'multi:softmax'
+# scale weight of positive examples
+param['eta'] = 0.2
+param['max_depth'] = 6
+param['silent'] = 1
+param['nthread'] = 4
+param['num_class'] = 38
+
+watchlist = [(xg_train, 'train'), (xg_test, 'test')]
+num_round = 15
+bst = xgb.train(param, xg_train, num_round, watchlist)
+# get prediction
+y_pred = bst.predict(xg_test)
+np.sum(y_pred == y_test.values) / y_test.shape[0]
