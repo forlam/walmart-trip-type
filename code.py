@@ -16,9 +16,7 @@ train_data = pd.read_csv('Data/train.csv')
 test_data = pd.read_csv('Data/test.csv')
 
 ####################################################################################
-####################################################################################
 ############################# Exploring the data ###################################
-####################################################################################
 ####################################################################################
 '''
 data.info()
@@ -38,8 +36,24 @@ len(set(data.DepartmentDescription))
 test = data
 test['leng'] = test['Upc'].apply(lambda x: len(str(x)))
 set(test.leng)
-'''
 
+# Extracting trips with only return items only
+return_trips = data.groupby(['VisitNumber', 'ScanCount']).size().reset_index()
+return_trips = return_trips.loc[return_trips['ScanCount'] < 0,:]
+return_trips = pd.Series(list(set(return_trips['VisitNumber'])))
+return_trips = return_trips.value_counts().reset_index()
+
+return_trips2 = pd.merge(left=data,right=return_trips,how='inner',left_on='VisitNumber',right_on='index')
+return_trips2 = return_trips2.groupby('VisitNumber').size().reset_index()
+return_trips2 = return_trips2.loc[return_trips2[0] == 1,:]
+return_trips3 = pd.merge(left = data.iloc[:,:2], right = return_trips2, how = 'inner',
+               left_on = 'VisitNumber', right_on = 'VisitNumber')
+return_trips3['TripType'] = 999
+return_trips3 = return_trips3.drop(0, axis = 1)
+return_trips3 = pd.merge(left = return_trips3, right = data.loc[data['type'] == 'Test',['TripType','VisitNumber']],
+                         how = 'inner', left_on = 'VisitNumber', right_on = 'VisitNumber')
+return_trips3 = return_trips3[['VisitNumber','TripType_x']].drop_duplicates()
+'''
 ####################################################################################
 ############################# Cleaning the dataset #################################
 ####################################################################################
@@ -74,7 +88,6 @@ most_freq_week_dept = most_freq_week_dept.sort_values(['Weekday',0], ascending =
 most_freq_week_dept = most_freq_week_dept.groupby('Weekday').first().reset_index()
 most_freq_week_dept.columns = ['Weekday','DeptDesc','fln','up', 0]
 
-
 data = pd.merge(left=data, right=most_freq_week_dept, how='left',
                 left_on = 'Weekday', right_on='Weekday')
 data['DepartmentDescription'] = np.where(pd.isnull(data['DepartmentDescription']), 
@@ -84,10 +97,16 @@ data['Upc'] = np.where(pd.isnull(data['Upc']),
 data['FinelineNumber'] = np.where(pd.isnull(data['FinelineNumber']), 
          data['fln'], data['FinelineNumber'])
 data = data.drop(['DeptDesc','up','fln',0],axis = 1)
-
-
 # data = data.dropna(how = 'any') # Removing Null Value rows
-data = data.loc[data['ScanCount'] > -1,:] # Removing rows for product return
+
+
+# Removing entries with any product return and extracting visitnumbers with only return
+return_trip_id = raw_data[['VisitNumber','type']].drop_duplicates()
+data = data.loc[data['ScanCount'] > -1,:] 
+return_trip_id = pd.merge(left = return_trip_id, right = data[['VisitNumber','type']].drop_duplicates(),
+                         how = 'left', left_on = 'VisitNumber', right_on = 'VisitNumber')
+return_trip_id = return_trip_id.loc[pd.isnull(return_trip_id['type_y']),:]
+return_trip_id = return_trip_id.drop('type_y', axis = 1)
 data2 = data
  
 # Aggregating number of items bought with respect to visit number and UPC
@@ -253,61 +272,34 @@ nx.draw(G, pos=nx.spring_layout(G), with_labels=True, node_size = 4, width = 0.2
 plt.savefig("labels.png", format="PNG",dpi=1000)
 '''
 
-####################################################################################
-############################# Scaling the data #####################################
-####################################################################################
+# Scaling the data
 from sklearn.preprocessing import StandardScaler
 sc_X = StandardScaler()
 data2[['UniqueItems','ScanCount','UniqueDepts','UniqueModels','idf_score']] = sc_X.fit_transform(data2[['UniqueItems','ScanCount','UniqueDepts','UniqueModels','idf_score']])
 data2.iloc[:,-68:] = sc_X.fit_transform(data2.iloc[:,-68:])
+
 
 # Splitting the dataframe into train/test data
 train = data2.loc[data2['type']=="Train",:]
 X_train = train.iloc[:,3:]
 y_train = train.iloc[:,0]
 
-from sklearn.cross_validation import train_test_split
-X_train, X_test, y_train, y_test = train_test_split( train.iloc[:,3:] ,train.iloc[:,0],test_size = 0.2)
-
-
 test = data2.loc[data2['type']=="Test",:]
 X_test = test.iloc[:,3:]
 y_test = test.iloc[:,0]
 
-
-# Applying Random Forest Classifier
-'''
-from sklearn.ensemble import RandomForestClassifier
-classifier = RandomForestClassifier(n_estimators = 250, criterion = 'entropy')
-classifier.fit(X_train, y_train)
-y_pred = classifier.predict(X_test)
-sum(y_pred == y_test)/18041
-
-
-from sklearn.linear_model import LogisticRegression
-classifier = LogisticRegression()
-classifier.fit(X_train, y_train)
-y_pred = classifier.predict(X_test)
-sum(y_pred == y_test)/18041
-
-from xgboost import XGBClassifier
-classifier = XGBClassifier()
-classifier.fit(X_train, y_train)
-y_pred = classifier.predict(X_test)
-sum(y_pred == y_test)/18041
-'''
-
+# Use XGBoost algorithm for multi-classification
 import xgboost as xgb
-
 label_dict = pd.DataFrame(list(set(train.TripType)))
 label_dict['ind'] = pd.Series(list(label_dict.index))
 label_dict = label_dict.set_index(0).to_dict()['ind']
 y_train = y_train.map(label_dict)
-y_test = y_test.map(label_dict)
+# creating a dummy label set for test dataset
+y_test = pd.Series([31 for i in range(X_test.shape[0])])
 
 xg_train = xgb.DMatrix(X_train.values, label=y_train.values)
 xg_test = xgb.DMatrix(X_test.values, label=y_test.values)
-# setup parameters for xgboost
+# setting up parameters for xgboost
 param = {}
 # use softmax multi-class classification
 param['objective'] = 'multi:softprob'
@@ -317,10 +309,18 @@ param['max_depth'] = 6
 param['silent'] = 1
 param['nthread'] = 4
 param['num_class'] = 38
-
 watchlist = [(xg_train, 'train'), (xg_test, 'test')]
-num_round = 5
+num_round = 50
 bst = xgb.train(param, xg_train, num_round, watchlist)
 # get prediction
 y_pred = bst.predict(xg_test)
-np.sum(y_pred == y_test.values) / y_test.shape[0]
+y_pred = pd.DataFrame(y_pred, columns = ["TripType_"+str(i) for i in list(label_dict.keys())])
+y_pred['VisitNumber'] = test['VisitNumber'].values
+# concatenating return visits with TripType value '999'
+y_pred2 = pd.DataFrame(return_trip_id.loc[return_trip_id['type_x'] == 'Test','VisitNumber'], columns = ['VisitNumber'])
+y_pred2['TripType_999'] = 1
+y_pred = pd.concat([y_pred, y_pred2], axis = 0)
+y_pred = y_pred.fillna(0)
+
+# Exporting final predictions to CSV file
+y_pred.to_csv('prediction.csv', index = False)
