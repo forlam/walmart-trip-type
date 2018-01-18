@@ -266,7 +266,7 @@ data2 = pd.merge(left=data2,right=dept_diff,how='left',left_on='VisitNumber',rig
 
 '''
 import networkx as nx    
-G = nx.from_numpy_matrix(dept_corr.values)
+G = nx.from_numpy_matrix(dept_corr)
 G = nx.relabel_nodes(G, dict(enumerate(dept_corr.columns)))
 nx.draw(G, pos=nx.spring_layout(G), with_labels=True, node_size = 4, width = 0.2, font_size = 3)
 plt.savefig("labels.png", format="PNG",dpi=1000)
